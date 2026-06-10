@@ -1,0 +1,504 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>3D Asset Hub for Games</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+    
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+    
+    <script type="importmap">
+        {
+            "imports": {
+                "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+                "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/",
+                "@supabase/supabase-js": "https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/+esm"
+            }
+        }
+    </script>
+    
+    <style>
+        body { margin: 0; overflow: hidden; background-color: #111827; }
+        #canvas-container { width: 100%; height: 100%; position: absolute; top: 0; left: 0; z-index: 0; }
+        #ui-layer { position: relative; z-index: 10; pointer-events: none; }
+        .pointer-events-auto { pointer-events: auto; }
+        
+        /* カスタムスクロールバー */
+        ::-webkit-scrollbar { width: 8px; }
+        ::-webkit-scrollbar-track { background: #1f2937; }
+        ::-webkit-scrollbar-thumb { background: #4b5563; border-radius: 4px; }
+        ::-webkit-scrollbar-thumb:hover { background: #6b7280; }
+        
+        #loading-overlay { display: none; }
+        .spinner {
+            border: 4px solid rgba(255,255,255,0.1);
+            border-top: 4px solid #3b82f6;
+            border-radius: 50%;
+            width: 40px;
+            height: 40px;
+            animation: spin 1s linear infinite;
+        }
+        @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+    </style>
+</head>
+<body class="text-white font-sans antialiased h-screen flex flex-col">
+
+    <div id="canvas-container"></div>
+
+    <div id="ui-layer" class="flex flex-col h-full w-full">
+        
+        <header id="main-header" class="bg-gray-900/80 backdrop-blur-md border-b border-gray-700 p-4 flex justify-between items-center pointer-events-auto">
+            <div class="flex items-center gap-3">
+                <i class="fa-solid fa-cube text-blue-500 text-2xl"></i>
+                <h1 class="text-xl font-bold tracking-wider">3D ASSET HUB</h1>
+            </div>
+            <div class="text-sm text-gray-400">
+                <i class="fa-solid fa-circle-info mr-1"></i> Supabase 連携環境
+            </div>
+        </header>
+
+        <div class="flex-1 flex overflow-hidden">
+            <div class="w-80 bg-gray-900/90 backdrop-blur-md border-r border-gray-700 flex flex-col h-full pointer-events-auto shadow-xl" id="sidebar">
+                <div class="p-6 flex-1 overflow-y-auto">
+                    <h2 class="text-lg font-semibold mb-4 border-b border-gray-700 pb-2">アセット管理</h2>
+                    
+                    <div id="drop-zone" class="border-2 border-dashed border-gray-600 rounded-xl p-8 text-center cursor-pointer hover:border-blue-500 hover:bg-gray-800/50 transition-all mb-6 relative group">
+                        <input type="file" id="file-input" accept=".glb,.gltf,.obj,.fbx,.stl,.3ds,.mtl,.png,.jpg,.jpeg,.zip" class="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10" multiple />
+                        <i class="fa-solid fa-cloud-arrow-up text-4xl text-gray-400 group-hover:text-blue-500 mb-3 transition-colors"></i>
+                        <p class="text-sm text-gray-300 font-medium">ZIPファイルをそのままドロップ</p>
+                        <p class="text-xs text-gray-500 mt-2">対応: ZIP(一括推奨), GLTF, GLB, OBJ, FBX, 3DS</p>
+                    </div>
+
+                    <div id="file-info" class="hidden bg-gray-800 rounded-lg p-4 mb-6 border border-gray-700">
+                        <h3 class="text-sm text-gray-400 mb-1">現在の対象アセット</h3>
+                        <p id="file-name" class="font-medium text-blue-400 truncate break-all">model_name.zip</p>
+                        <div class="flex justify-between text-xs text-gray-500 mt-2">
+                            <span id="file-size">0 MB</span>
+                        </div>
+                    </div>
+
+                    <div id="action-buttons" class="hidden flex-col gap-3">
+                        <div class="relative py-3">
+                            <div class="absolute inset-0 flex items-center">
+                                <div class="w-full border-t border-gray-700"></div>
+                            </div>
+                            <div class="relative flex justify-center">
+                                <span class="bg-gray-900 px-2 text-xs text-gray-500">Supabase Storage 連携</span>
+                            </div>
+                        </div>
+
+                        <button id="btn-engine-sync" class="w-full bg-blue-600 hover:bg-blue-700 text-white font-medium py-3 px-4 rounded-lg transition-colors flex items-center justify-center gap-2 shadow-lg">
+                            <i class="fa-solid fa-cloud-arrow-up"></i> 埋め込みコード＆URLを発行
+                        </button>
+                    </div>
+
+                    <div id="initial-message" class="text-center text-gray-500 text-sm mt-10">
+                        <i class="fa-solid fa-arrow-up block text-2xl mb-2 opacity-50"></i>
+                        <span class="text-blue-400 font-bold block mb-1">💡 新機能: ZIPのまま対応！</span>
+                        モデルと画像が入った<strong>ZIPファイル（.zip）をそのままドロップ</strong>するだけで、自動解凍されてテクスチャ付きで表示されます。
+                    </div>
+                </div>
+            </div>
+
+            <div class="flex-1 relative">
+                <div class="absolute bottom-6 left-6 pointer-events-auto bg-gray-900/60 backdrop-blur-sm px-4 py-2 rounded-full text-xs text-gray-300 border border-gray-700/50 flex gap-4">
+                    <span><i class="fa-solid fa-hand-pointer mr-1"></i> ドラッグ: 回転</span>
+                    <span><i class="fa-solid fa-arrows-up-down-left-right mr-1"></i> 右ドラッグ: 移動</span>
+                    <span><i class="fa-solid fa-magnifying-glass mr-1"></i> ホイール: ズーム</span>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div id="loading-overlay" class="absolute inset-0 bg-gray-900/80 backdrop-blur-sm z-50 flex flex-col items-center justify-center pointer-events-auto">
+        <div class="spinner mb-4"></div>
+        <p id="loading-text" class="text-blue-400 font-medium">処理中...</p>
+    </div>
+
+    <div id="modal-overlay" class="fixed inset-0 bg-black/70 backdrop-blur-sm z-[60] hidden flex items-center justify-center pointer-events-auto transition-opacity duration-300">
+        <div class="bg-gray-800 rounded-xl max-w-xl w-full p-6 border border-gray-700 shadow-2xl overflow-y-auto max-h-[90vh]">
+            <div class="flex justify-between items-start mb-4">
+                <h3 class="text-xl font-bold text-white flex items-center gap-2">
+                    <i class="fa-solid fa-code text-green-500"></i> 埋め込みリンクの生成完了
+                </h3>
+                <button id="btn-close-modal" class="text-gray-400 hover:text-white transition-colors">
+                    <i class="fa-solid fa-xmark text-xl"></i>
+                </button>
+            </div>
+            
+            <p class="text-gray-300 text-sm mb-4">
+                アップロードが成功しました。プログラムや外部サイトにこの3Dを反映した状態で埋め込むためのパーツコードです。
+            </p>
+            
+            <label class="block text-xs text-gray-400 mb-1 font-medium">① アセット単体の直URL (ゲームエンジン内でのロード用)</label>
+            <div class="bg-gray-900 rounded-lg p-3 mb-3 border border-gray-700 flex items-center gap-2">
+                <code id="api-url" class="text-green-400 text-xs flex-1 overflow-x-auto whitespace-nowrap">https://...</code>
+                <button id="btn-copy" class="bg-gray-700 hover:bg-gray-600 text-white p-2 rounded transition-colors" title="コピー"><i class="fa-regular fa-copy"></i></button>
+            </div>
+
+            <label class="block text-xs text-gray-400 mb-1 font-medium">② この3Dビューアの自動再生リンク (単体共有用)</label>
+            <div class="bg-gray-900 rounded-lg p-3 mb-3 border border-gray-700 flex items-center gap-2">
+                <code id="viewer-url" class="text-blue-400 text-xs flex-1 overflow-x-auto whitespace-nowrap">https://...</code>
+                <button id="btn-copy-viewer" class="bg-gray-700 hover:bg-gray-600 text-white p-2 rounded transition-colors" title="コピー"><i class="fa-regular fa-copy"></i></button>
+            </div>
+
+            <label class="block text-xs text-gray-400 mb-1 font-medium">③ 他のプログラム・WEBページ埋め込み用 iframe コード</label>
+            <div class="bg-gray-900 rounded-lg p-3 mb-4 border border-gray-700 flex items-center gap-2">
+                <code id="iframe-code" class="text-purple-400 text-xs flex-1 overflow-x-auto whitespace-nowrap">&lt;iframe...&gt;</code>
+                <button id="btn-copy-iframe" class="bg-gray-700 hover:bg-gray-600 text-white p-2 rounded transition-colors" title="コピー"><i class="fa-regular fa-copy"></i></button>
+            </div>
+            
+            <div class="bg-blue-900/30 border border-blue-800/50 rounded-lg p-3 text-xs text-blue-300">
+                <i class="fa-solid fa-lightbulb text-yellow-500 mr-1"></i>
+                <strong>確認事項:</strong> 他のプログラムからアクセスさせる場合、Supabase Storageの対象バケット（`models`）が <strong>Public（公開解禁）</strong> に設定されていることをご確認ください。
+            </div>
+        </div>
+    </div>
+
+    <script type="module">
+        import * as THREE from 'three';
+        import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+        import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+        import { OBJLoader } from 'three/addons/loaders/OBJLoader.js';
+        import { MTLLoader } from 'three/addons/loaders/MTLLoader.js';
+        import { FBXLoader } from 'three/addons/loaders/FBXLoader.js';
+        import { STLLoader } from 'three/addons/loaders/STLLoader.js';
+        import { TDSLoader } from 'three/addons/loaders/TDSLoader.js';
+        import { createClient } from '@supabase/supabase-js';
+
+        // --- Supabase 初期設定 ---
+        const SUPABASE_URL = 'https://wpvywialtufcmnczepnd.supabase.co';
+        const SUPABASE_ANON_KEY = 'sb_publishable_5vr0xVMin2Q6nCEYFoEeHw_aSRHW678'; 
+        const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+        const BUCKET_NAME = 'models';
+
+        // --- UI要素取得 ---
+        const fileInput = document.getElementById('file-input');
+        const fileInfo = document.getElementById('file-info');
+        const fileNameEl = document.getElementById('file-name');
+        const fileSizeEl = document.getElementById('file-size');
+        const actionButtons = document.getElementById('action-buttons');
+        const initialMessage = document.getElementById('initial-message');
+        const loadingOverlay = document.getElementById('loading-overlay');
+        const loadingText = document.getElementById('loading-text');
+        const modalOverlay = document.getElementById('modal-overlay');
+        const apiUrlEl = document.getElementById('api-url');
+        const btnEngineSync = document.getElementById('btn-engine-sync');
+        const btnCloseModal = document.getElementById('btn-close-modal');
+
+        let selectedFile = null; // アップロード対象オブジェクト（モデルまたはZIP本体）
+
+        // --- Three.js 3Dプレビュー初期化 ---
+        const container = document.getElementById('canvas-container');
+        const scene = new THREE.Scene();
+        scene.background = new THREE.Color(0x111827);
+
+        const camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 0.1, 1000);
+        camera.position.set(0, 5, 15);
+
+        const renderer = new THREE.WebGLRenderer({ antialias: true });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        renderer.setPixelRatio(window.devicePixelRatio);
+        renderer.shadowMap.enabled = true;
+        container.appendChild(renderer.domElement);
+
+        const controls = new OrbitControls(camera, renderer.domElement);
+        controls.enableDamping = true;
+
+        const ambientLight = new THREE.AmbientLight(0xffffff, 0.8);
+        scene.add(ambientLight);
+        const dirLight = new THREE.DirectionalLight(0xffffff, 0.8);
+        dirLight.position.set(5, 15, 7);
+        scene.add(dirLight);
+
+        let currentModel = null;
+
+        function animate() {
+            requestAnimationFrame(animate);
+            controls.update();
+            renderer.render(scene, camera);
+        }
+        animate();
+
+        window.addEventListener('resize', () => {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        });
+
+        // --- 統合ファイル解析ロード処理 ---
+        function loadModelWithTextures(modelFile, mtlFile, fileMap) {
+            showLoading("3Dモデルとテクスチャを解析・統合中...");
+            if (currentModel) scene.remove(currentModel);
+
+            const extension = modelFile.name.split('.').pop().toLowerCase();
+            const blobUrls = new Map();
+            fileMap.forEach((file, name) => {
+                blobUrls.set(name, URL.createObjectURL(file));
+            });
+
+            const modelUrl = blobUrls.get(modelFile.name);
+
+            const manager = new THREE.LoadingManager();
+            manager.setURLModifier((url) => {
+                const baseName = url.split('/').pop().split('\\').pop();
+                const decodedBaseName = decodeURIComponent(baseName);
+                for (const [fileName, blobUrl] of blobUrls.entries()) {
+                    if (fileName.toLowerCase() === baseName.toLowerCase() || fileName.toLowerCase() === decodedBaseName.toLowerCase()) {
+                        return blobUrl;
+                    }
+                }
+                return url;
+            });
+
+            const cleanupUrls = () => {
+                blobUrls.forEach((url) => URL.revokeObjectURL(url));
+            };
+
+            manager.onLoad = () => {
+                hideLoading();
+                setTimeout(cleanupUrls, 500);
+            };
+
+            const handleLoadError = (error) => {
+                console.error(error);
+                alert("データの解析に失敗しました。ファイル破損や対応形式かご確認ください。");
+                hideLoading();
+                cleanupUrls();
+            };
+
+            const setupModel = (model) => {
+                currentModel = model;
+                scene.add(currentModel);
+
+                currentModel.traverse((child) => {
+                    if (child.isMesh) {
+                        child.castShadow = true;
+                        child.receiveShadow = true;
+                        if (!child.material) {
+                            child.material = new THREE.MeshStandardMaterial({ color: 0x9ca3af, roughness: 0.5 });
+                        }
+                    }
+                });
+
+                const box = new THREE.Box3().setFromObject(currentModel);
+                const center = box.getCenter(new THREE.Vector3());
+                const size = box.getSize(new THREE.Vector3());
+                const maxDim = Math.max(size.x, size.y, size.z);
+                
+                currentModel.position.x += (currentModel.position.x - center.x);
+                currentModel.position.y += (currentModel.position.y - center.y);
+                currentModel.position.z += (currentModel.position.z - center.z);
+                
+                camera.position.set(0, maxDim * 1.2, maxDim * 2.2);
+                controls.target.set(0, 0, 0);
+                controls.update();
+            };
+
+            if (extension === '3ds') {
+                const tdsLoader = new TDSLoader(manager);
+                tdsLoader.load(modelUrl, setupModel, undefined, handleLoadError);
+            } else if (extension === 'obj') {
+                const objLoader = new OBJLoader(manager);
+                if (mtlFile) {
+                    const mtlLoader = new MTLLoader(manager);
+                    const mtlUrl = blobUrls.get(mtlFile.name);
+                    mtlLoader.load(mtlUrl, (materials) => {
+                        materials.preload();
+                        objLoader.setMaterials(materials);
+                        objLoader.load(modelUrl, setupModel, undefined, handleLoadError);
+                    }, undefined, () => {
+                        objLoader.load(modelUrl, setupModel, undefined, handleLoadError);
+                    });
+                } else {
+                    objLoader.load(modelUrl, setupModel, undefined, handleLoadError);
+                }
+            } else if (extension === 'gltf' || extension === 'glb') {
+                const gltfLoader = new GLTFLoader(manager);
+                gltfLoader.load(modelUrl, (gltf) => setupModel(gltf.scene), undefined, handleLoadError);
+            } else if (extension === 'fbx') {
+                const fbxLoader = new FBXLoader(manager);
+                fbxLoader.load(modelUrl, setupModel, undefined, handleLoadError);
+            } else if (extension === 'stl') {
+                const stlLoader = new STLLoader(manager);
+                stlLoader.load(modelUrl, (geometry) => {
+                    const material = new THREE.MeshStandardMaterial({ color: 0x9ca3af, roughness: 0.4 });
+                    setupModel(new THREE.Mesh(geometry, material));
+                }, undefined, handleLoadError);
+            }
+        }
+
+        // --- 入力ファイル一括仕分け処理 (ZIP対応) ---
+        async function handleIncomingFiles(files) {
+            if (files.length === 0) return;
+
+            showLoading("ファイルを準備中...");
+            const fileMap = new Map();
+            let modelFile = null;
+            let mtlFile = null;
+            let targetZip = null;
+
+            // ZIPファイルが含まれているか検出
+            for (const file of files) {
+                if (file.name.split('.').pop().toLowerCase() === 'zip') {
+                    targetZip = file;
+                    break;
+                }
+            }
+
+            if (targetZip) {
+                showLoading("ZIPファイルを直接解凍中...");
+                selectedFile = targetZip; // アップロード対象はZIPにする
+                try {
+                    const zip = await JSZip.loadAsync(targetZip);
+                    const promises = [];
+
+                    zip.forEach((relativePath, zipEntry) => {
+                        if (!zipEntry.dir) {
+                            const baseName = relativePath.split('/').pop();
+                            const ext = baseName.split('.').pop().toLowerCase();
+                            
+                            if (relativePath.includes('__MACOSX') || baseName.startsWith('.')) return;
+
+                            const p = zipEntry.async('blob').then((blob) => {
+                                const unzippedFile = new File([blob], baseName, { type: blob.type });
+                                fileMap.set(baseName, unzippedFile);
+                                if (['glb', 'gltf', 'obj', 'fbx', 'stl', '3ds'].includes(ext)) {
+                                    if (!modelFile) modelFile = unzippedFile;
+                                } else if (ext === 'mtl') {
+                                    mtlFile = unzippedFile;
+                                }
+                            });
+                            promises.push(p);
+                        }
+                    });
+                    await Promise.all(promises);
+                } catch (err) {
+                    console.error(err);
+                    alert("ZIPの自動解凍に失敗しました。");
+                    hideLoading();
+                    return;
+                }
+            } else {
+                // 通常の複数ファイル手動選択
+                files.forEach(file => {
+                    fileMap.set(file.name, file);
+                    const ext = file.name.split('.').pop().toLowerCase();
+                    if (['glb', 'gltf', 'obj', 'fbx', 'stl', '3ds'].includes(ext)) {
+                        if (!modelFile) modelFile = file;
+                    } else if (ext === 'mtl') {
+                        mtlFile = file;
+                    }
+                });
+                selectedFile = modelFile;
+            }
+
+            if (!modelFile) {
+                alert("対応する3Dモデルファイル（.3ds, .obj, .glb, またはZIP）が見つかりません。");
+                hideLoading();
+                return;
+            }
+
+            // UI反映
+            fileNameEl.textContent = selectedFile.name + (fileMap.size > 1 && !targetZip ? ` (+他 ${fileMap.size - 1} 個)` : '');
+            fileSizeEl.textContent = (selectedFile.size / (1024 * 1024)).toFixed(2) + " MB";
+            fileInfo.classList.remove('hidden');
+            actionButtons.classList.remove('hidden');
+            initialMessage.classList.add('hidden');
+
+            loadModelWithTextures(modelFile, mtlFile, fileMap);
+        }
+
+        fileInput.addEventListener('change', (e) => {
+            handleIncomingFiles(Array.from(e.target.files));
+        });
+
+        // --- URLパラメータを監視して最初から自動反映させる仕組み (埋め込み用) ---
+        window.addEventListener('DOMContentLoaded', async () => {
+            const urlParams = new URLSearchParams(window.location.search);
+            const modelUrl = urlParams.get('model');
+            if (modelUrl) {
+                // 埋め込みモード時は操作パネル類をスッキリ非表示にする
+                document.getElementById('sidebar').style.display = 'none';
+                document.getElementById('main-header').style.display = 'none';
+                
+                showLoading("埋め込みアセットを同期中...");
+                try {
+                    const response = await fetch(modelUrl);
+                    if (!response.ok) throw new Error("ネットワークエラー");
+                    const blob = await response.blob();
+                    
+                    const urlPath = new URL(modelUrl).pathname;
+                    const fileName = urlPath.split('/').pop() || "embedded_asset.zip";
+                    const file = new File([blob], fileName, { type: blob.type });
+
+                    await handleIncomingFiles([file]);
+                } catch (e) {
+                    console.error(e);
+                    alert("埋め込みデータの自動読み込みに失敗しました。");
+                    hideLoading();
+                }
+            }
+        });
+
+        // --- Supabase Storageへのアップロード＆埋め込みURLコード生成 ---
+        btnEngineSync.addEventListener('click', async () => {
+            if (!selectedFile) return;
+
+            showLoading("Supabase Storageへ同期中...");
+
+            const fileExt = selectedFile.name.split('.').pop();
+            const fileName = `${Date.now()}.${fileExt}`;
+            const filePath = `uploaded_models/${fileName}`;
+
+            try {
+                const { data, error } = await supabase.storage
+                    .from(BUCKET_NAME)
+                    .upload(filePath, selectedFile, { cacheControl: '3600', upsert: false });
+
+                if (error) throw error;
+
+                const { data: publicUrlData } = supabase.storage.from(BUCKET_NAME).getPublicUrl(filePath);
+                const pUrl = publicUrlData.publicUrl;
+
+                // ① 直リンクのセット
+                apiUrlEl.textContent = pUrl;
+
+                // ② 自動再生ビューアURLの構築
+                const currentSiteUrl = window.location.origin + window.location.pathname;
+                const embedViewerUrl = `${currentSiteUrl}?model=${encodeURIComponent(pUrl)}`;
+                document.getElementById('viewer-url').textContent = embedViewerUrl;
+
+                // ③ Webサイト埋め込み用iframeコードの生成
+                const iframeTag = `<iframe src="${embedViewerUrl}" width="100%" height="500px" frameborder="0" allowfullscreen></iframe>`;
+                document.getElementById('iframe-code').textContent = iframeTag;
+
+                hideLoading();
+                modalOverlay.classList.remove('hidden');
+
+            } catch (error) {
+                console.error(error);
+                alert("同期に失敗しました。\n原因: " + (error.message || "バケット制限を確認してください。"));
+                hideLoading();
+            }
+        });
+
+        // --- コピー＆モーダル制御 ---
+        function showLoading(text) { loadingText.textContent = text; loadingOverlay.style.display = 'flex'; }
+        function hideLoading() { loadingOverlay.style.display = 'none'; }
+        btnCloseModal.addEventListener('click', () => modalOverlay.classList.add('hidden'));
+
+        document.getElementById('btn-copy').addEventListener('click', () => {
+            navigator.clipboard.writeText(apiUrlEl.textContent); alert("直URLをコピーしました！");
+        });
+        document.getElementById('btn-copy-viewer').addEventListener('click', () => {
+            navigator.clipboard.writeText(document.getElementById('viewer-url').textContent); alert("ビューアリンクをコピーしました！");
+        });
+        document.getElementById('btn-copy-iframe').addEventListener('click', () => {
+            navigator.clipboard.writeText(document.getElementById('iframe-code').textContent); alert("iframe埋め込みコードをコピーしました！");
+        });
+    </script>
+</body>
+</html>
